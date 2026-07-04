@@ -1,0 +1,6 @@
+﻿/target/
+**/target/
+__pycache__/
+*.pyc
+assets/pybullet/
+.DS_Store
