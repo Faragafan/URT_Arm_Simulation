@@ -1,8 +1,9 @@
 ﻿param(
     [string]$UrdfPath = "assets/urdf/urdf_assembly_rigid_stl_collapsed.urdf",
-    [string]$Joints = "0,0,0,0,0",
-    [string]$TargetLink = "link5",
+    [string]$Joints = "0,0,0,0,0,0",
+    [string]$TargetLink = "link6",
     [string]$TargetXyz = "",
+    [string]$TargetRpy = "",
     [switch]$List
 )
 
@@ -17,7 +18,9 @@ if ($List) {
     if ($TargetXyz -ne "") {
         $argsList += "--target-xyz=$TargetXyz"
     }
+    if ($TargetRpy -ne "") {
+        $argsList += "--target-rpy=$TargetRpy"
+    }
 }
 
 cargo run --quiet --manifest-path $manifestPath -- @argsList
-

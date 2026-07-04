@@ -4,6 +4,7 @@
     [string]$MeshDir = "",
     [string]$Joints = "",
     [string]$TargetXyz = "",
+    [string]$TargetRpy = "",
     [switch]$DryRun
 )
 
@@ -33,11 +34,12 @@ if ($Joints -ne "") {
 if ($TargetXyz -ne "") {
     $viewerArgs += "--target-xyz=$TargetXyz"
 }
+if ($TargetRpy -ne "") {
+    $viewerArgs += "--target-rpy=$TargetRpy"
+}
 if ($DryRun) {
     $viewerArgs += "--dry-run"
 }
 
 $manifestPath = Join-Path $PSScriptRoot "bevy_viewer\Cargo.toml"
 cargo run --quiet --manifest-path $manifestPath -- @viewerArgs
-
-

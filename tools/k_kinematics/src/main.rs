@@ -1,22 +1,29 @@
-﻿use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
+use k::nalgebra::UnitQuaternion;
 use k::InverseKinematicsSolver;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(about = "Forward and inverse kinematics demo using the k crate and the URT arm URDF")]
 struct Args {
-    #[arg(long, default_value = "assets/urdf/urdf_assembly_rigid_stl_collapsed.urdf")]
+    #[arg(
+        long,
+        default_value = "assets/urdf/urdf_assembly_rigid_stl_collapsed.urdf"
+    )]
     urdf: PathBuf,
 
     #[arg(long, value_delimiter = ',', num_args = 0..)]
     joints: Vec<f64>,
 
-    #[arg(long, default_value = "link5")]
+    #[arg(long, default_value = "link6")]
     target_link: String,
 
     #[arg(long, value_delimiter = ',')]
     target_xyz: Option<Vec<f64>>,
+
+    #[arg(long, value_delimiter = ',')]
+    target_rpy: Option<Vec<f64>>,
 
     #[arg(long)]
     list: bool,
@@ -67,7 +74,7 @@ fn main() -> Result<()> {
 
     if positions.len() != chain.dof() {
         bail!(
-            "expected {} joint values, got {}. Example: --joints 0,0.2,-0.4,0,0.1",
+            "expected {} joint values, got {}. Example: --joints 0,0.2,-0.4,0,0.1,-0.2",
             chain.dof(),
             positions.len()
         );
@@ -85,7 +92,16 @@ fn main() -> Result<()> {
                 target_xyz.len()
             );
         }
-        solve_ik(&chain, &args.target_link, target_xyz)?;
+        let target_rpy = args.target_rpy.as_deref();
+        if let Some(target_rpy) = target_rpy {
+            if target_rpy.len() != 3 {
+                bail!(
+                    "expected --target-rpy to have 3 comma-separated values, got {}",
+                    target_rpy.len()
+                );
+            }
+        }
+        solve_ik(&chain, &args.target_link, target_xyz, target_rpy)?;
     }
 
     println!("\nJoint positions:");
@@ -101,9 +117,12 @@ fn main() -> Result<()> {
     }
 
     println!("\nTarget link pose:");
-    let target = chain
-        .find_link(&args.target_link)
-        .with_context(|| format!("target link '{}' was not found in the URDF", args.target_link))?;
+    let target = chain.find_link(&args.target_link).with_context(|| {
+        format!(
+            "target link '{}' was not found in the URDF",
+            args.target_link
+        )
+    })?;
     let target_transform = target
         .world_transform()
         .with_context(|| format!("target link '{}' has no world transform", args.target_link))?;
@@ -112,7 +131,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn solve_ik(chain: &k::Chain<f64>, target_link: &str, target_xyz: &[f64]) -> Result<()> {
+fn solve_ik(
+    chain: &k::Chain<f64>,
+    target_link: &str,
+    target_xyz: &[f64],
+    target_rpy: Option<&[f64]>,
+) -> Result<()> {
     let target_node = chain
         .find_link(target_link)
         .with_context(|| format!("target link '{target_link}' was not found in the URDF"))?;
@@ -123,23 +147,30 @@ fn solve_ik(chain: &k::Chain<f64>, target_link: &str, target_xyz: &[f64]) -> Res
     target_transform.translation.vector.x = target_xyz[0];
     target_transform.translation.vector.y = target_xyz[1];
     target_transform.translation.vector.z = target_xyz[2];
+    if let Some(target_rpy) = target_rpy {
+        target_transform.rotation =
+            UnitQuaternion::from_euler_angles(target_rpy[0], target_rpy[1], target_rpy[2]);
+    }
 
     let arm = k::SerialChain::from_end(target_node);
     let solver = k::JacobianIkSolver::default();
-    let mut constraints = k::Constraints::default();
-    constraints.rotation_x = false;
-    constraints.rotation_y = false;
-    constraints.rotation_z = false;
 
     solver
-        .solve_with_constraints(&arm, &target_transform, &constraints)
-        .context("position-only IK solver failed")?;
+        .solve(&arm, &target_transform)
+        .context("full-pose IK solver failed")?;
     chain.update_transforms();
 
-    println!(
-        "\nIK requested target for {target_link}: xyz=[{:.6}, {:.6}, {:.6}]",
-        target_xyz[0], target_xyz[1], target_xyz[2]
-    );
+    if let Some(target_rpy) = target_rpy {
+        println!(
+            "\nIK requested target for {target_link}: xyz=[{:.6}, {:.6}, {:.6}] rpy=[{:.6}, {:.6}, {:.6}]",
+            target_xyz[0], target_xyz[1], target_xyz[2], target_rpy[0], target_rpy[1], target_rpy[2]
+        );
+    } else {
+        println!(
+            "\nIK requested target for {target_link}: xyz=[{:.6}, {:.6}, {:.6}] orientation=current",
+            target_xyz[0], target_xyz[1], target_xyz[2]
+        );
+    }
 
     Ok(())
 }
@@ -152,4 +183,3 @@ fn print_pose(label: &str, transform: &k::Isometry3<f64>) {
         t.x, t.y, t.z, q.i, q.j, q.k, q.w
     );
 }
-

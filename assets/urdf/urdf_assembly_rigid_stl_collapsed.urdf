@@ -186,7 +186,7 @@
     <visual>
       <origin xyz="0.0485 -0.0295 7.37592997e-18" rpy="6.24500451e-17 4.06837336e-17 7.17436906e-18" />
       <geometry>
-        <mesh filename="../meshes_onshape_rigid_stl/Part_1_8.stl" scale="1 1 1" />
+        <mesh filename="../meshes_onshape_rigid_stl/Part_1_9.stl" scale="1 1 1" />
       </geometry>
       <material name="0.658824_0.658824_0.658824_0.000000_0.000000">
         <color rgba="0.658824 0.658824 0.658824 1" />
@@ -270,6 +270,94 @@
       </material>
     </visual>
   </link>
+  <link name="link6">
+    <inertial>
+      <mass value="0.00033959712" />
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <inertia ixx="1e-06" ixy="0" ixz="0" iyy="1e-06" iyz="0" izz="1e-06" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.0126001059 -0.165783489 0.0022816459" rpy="2.34063371e-06 0.348012654 -6.56103735e-06" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Block.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.647059_0.647059_0.647059_0.000000_0.000000">
+        <color rgba="0.647059 0.647059 0.647059 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0420818057 -0.156093429 0.0856886369" rpy="3.14159 1.22278735 3.14159" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Gripper.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-0.00554077611 -0.156091703 -0.0985130176" rpy="-7.34653534e-06 -1.22278735 -2.65347105e-06" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Gripper.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0118246819 -0.176091929 -0.0154562385" rpy="1.91881265 -3.45299224e-06 1.57079242" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Linkage_Connector.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0191227346 -0.176093027 0.00466087931" rpy="-1.91881265 9.47643981e-07 -1.57080714" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Linkage_Connector.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0178061822 -0.156092033 -0.0165623036" rpy="1.22278735 9.47643977e-07 -1.57080714" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Linkage_No_Connector.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0244221715 -0.156093038 0.00167471058" rpy="-1.22278735 -3.45299227e-06 1.57079242" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Linkage_No_Connector.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="0.0139779589 -0.236179132 -0.0051210112" rpy="1.5708 1.22278 3.14159" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Main_Body.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.615686_0.811765_0.929412_0.000000_0.000000">
+        <color rgba="0.615686 0.811765 0.929412 1" />
+      </material>
+    </visual>
+    <visual>
+      <origin xyz="-4.36666706e-17 -0.0877 -2.85314405e-17" rpy="3.14159 1.22262 3.14159" />
+      <geometry>
+        <mesh filename="../meshes_onshape_rigid_stl/Part_1_8.stl" scale="1 1 1" />
+      </geometry>
+      <material name="0.972549_0.529412_0.003922_0.000000_0.000000">
+        <color rgba="0.972549 0.529412 0.00392157 1" />
+      </material>
+    </visual>
+  </link>
   <link name="link5">
     <inertial>
       <mass value="0.24837018" />
@@ -295,7 +383,7 @@
       </material>
     </visual>
     <visual>
-      <origin xyz="-0.1 0.012 1.19851391e-17" rpy="0 1.60741442e-17 4.63651012e-17" />
+      <origin xyz="-0.1 0.012 -2.6008759e-19" rpy="-2.08166817e-17 3.48977574e-17 1.54481022e-16" />
       <geometry>
         <mesh filename="../meshes_onshape_rigid_stl/L5.stl" scale="1 1 1" />
       </geometry>
@@ -352,9 +440,15 @@
     <child link="link4" />
   </joint>
   <joint name="revolute_5" type="continuous">
-    <origin xyz="-1.75582236e-13 -0.0285989518 0.370000124" rpy="5.30717959e-06 2.65358979e-06 -3.14159265" />
-    <axis xyz="-5.55111512e-17 -1 0" />
+    <origin xyz="-1.74638573e-13 -0.0285989518 0.370000124" rpy="5.30717959e-06 -2.65358979e-06 3.14159265" />
+    <axis xyz="-1.66533454e-16 -1 2.08166817e-17" />
     <parent link="link4" />
     <child link="link5" />
+  </joint>
+  <joint name="revolute_6" type="continuous">
+    <origin xyz="-0.118800029 0.0404281961 3.33587926e-05" rpy="3.14158558 -0.523594 1.57079589" />
+    <axis xyz="1.66533454e-16 1 1.11022302e-16" />
+    <parent link="link5" />
+    <child link="link6" />
   </joint>
 </robot>

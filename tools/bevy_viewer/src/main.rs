@@ -1,7 +1,9 @@
-﻿use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
+use k::nalgebra::UnitQuaternion;
 use k::InverseKinematicsSolver;
 use std::collections::HashMap;
 use std::env;
@@ -10,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_TRIANGLE_CAP: usize = 25_000;
 const JOINT_SPEED: f32 = 1.2;
+const TARGET_MOVE_SPEED: f32 = 0.25;
+const TARGET_ROTATE_SPEED: f32 = 1.2;
+const TASK_TARGET_LINK: &str = "link6";
 const DEFAULT_LIMIT: f32 = std::f32::consts::PI;
 const KEY_PAIRS: [(KeyCode, KeyCode); 8] = [
     (KeyCode::KeyQ, KeyCode::KeyA),
@@ -78,6 +83,24 @@ struct OrbitCamera {
     pitch: f32,
 }
 
+#[derive(Component)]
+struct TargetMarker;
+
+#[derive(Resource)]
+struct TaskSpaceControl {
+    enabled: bool,
+    target: Vec3,
+    target_rpy: Vec3,
+    target_orientation_enabled: bool,
+    target_link: String,
+}
+
+#[derive(Resource)]
+struct KinematicsState {
+    chain: k::Chain<f64>,
+    joint_names: Vec<String>,
+}
+
 #[derive(Resource)]
 struct ViewerSettings {
     urdf_path: PathBuf,
@@ -85,6 +108,8 @@ struct ViewerSettings {
     triangle_cap: usize,
     initial_joint_values: HashMap<String, f32>,
     target_xyz: Option<Vec3>,
+    target_rpy: Vec3,
+    target_orientation_enabled: bool,
     dry_run: bool,
 }
 
@@ -104,10 +129,22 @@ fn main() {
         println!("Triangle cap per STL: {}", settings.triangle_cap);
     }
     if let Some(target_xyz) = settings.target_xyz {
-        println!(
-            "k IK target for link5: xyz=[{:.3}, {:.3}, {:.3}]",
-            target_xyz.x, target_xyz.y, target_xyz.z
-        );
+        if settings.target_orientation_enabled {
+            println!(
+                "k IK target for link6: xyz=[{:.3}, {:.3}, {:.3}], rpy=[{:.3}, {:.3}, {:.3}]",
+                target_xyz.x,
+                target_xyz.y,
+                target_xyz.z,
+                settings.target_rpy.x,
+                settings.target_rpy.y,
+                settings.target_rpy.z
+            );
+        } else {
+            println!(
+                "k IK target for link6: xyz=[{:.3}, {:.3}, {:.3}], orientation=current",
+                target_xyz.x, target_xyz.y, target_xyz.z
+            );
+        }
     }
     if !settings.initial_joint_values.is_empty() {
         println!("Initial joint values from k:");
@@ -124,6 +161,9 @@ fn main() {
             println!("  {:?}/{:?} {}", inc, dec, joint.name);
         }
     }
+    println!("  M toggle task-space IK");
+    println!("  Arrow keys move target X/Y, PageUp/PageDown move target Z");
+    println!("  Z/X target roll, C/V target pitch, B/N target yaw");
     println!("  Space reset, mouse drag orbit, wheel zoom");
     if settings.dry_run {
         println!("Dry run complete; window was not opened.");
@@ -134,16 +174,32 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.04, 0.045, 0.05)))
         .insert_resource(settings)
         .insert_resource(model_resource(model))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "URT Arm Bevy Viewer".to_string(),
-                resolution: (1280.0, 840.0).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "URT Arm Bevy Viewer".to_string(),
+                        resolution: (1280.0, 840.0).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(LogPlugin {
+                    filter: "info,k::urdf=warn".to_string(),
+                    level: Level::INFO,
+                    ..default()
+                }),
+        )
         .add_systems(Startup, setup)
-        .add_systems(Update, (drive_joints, orbit_camera, draw_joint_axes))
+        .add_systems(
+            Update,
+            (
+                drive_task_space_target,
+                drive_joints,
+                orbit_camera,
+                draw_joint_axes,
+            ),
+        )
         .run();
 }
 
@@ -178,16 +234,31 @@ fn setup(
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -0.8,
-            -0.4,
-            -0.5,
-        )),
+        transform: Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.4, -0.5)),
         ..default()
     });
 
     spawn_ground(&mut commands, &mut meshes, &mut materials);
+
+    let task_target = settings.target_xyz.unwrap_or(Vec3::new(-0.20, 0.30, 0.28));
+    commands.insert_resource(TaskSpaceControl {
+        enabled: settings.target_xyz.is_some(),
+        target: task_target,
+        target_rpy: settings.target_rpy,
+        target_orientation_enabled: settings.target_orientation_enabled,
+        target_link: TASK_TARGET_LINK.to_string(),
+    });
+    commands.insert_resource(
+        create_kinematics_state(&settings.urdf_path)
+            .expect("failed to initialize k kinematics state"),
+    );
+    spawn_target_marker(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        task_target,
+        settings.target_rpy,
+    );
 
     let mut link_entities = HashMap::new();
     for link in &model.0.links {
@@ -212,11 +283,17 @@ fn setup(
 
     for joint in &model.0.joints {
         let Some(parent) = link_entities.get(&joint.parent).copied() else {
-            warn!("joint {} references missing parent {}", joint.name, joint.parent);
+            warn!(
+                "joint {} references missing parent {}",
+                joint.name, joint.parent
+            );
             continue;
         };
         let Some(child) = link_entities.get(&joint.child).copied() else {
-            warn!("joint {} references missing child {}", joint.name, joint.child);
+            warn!(
+                "joint {} references missing child {}",
+                joint.name, joint.child
+            );
             continue;
         };
 
@@ -234,11 +311,14 @@ fn setup(
             Quat::IDENTITY
         };
         commands.entity(child).insert(
-            Transform::from_translation(joint.origin_xyz).with_rotation(origin_rotation * joint_rotation),
+            Transform::from_translation(joint.origin_xyz)
+                .with_rotation(origin_rotation * joint_rotation),
         );
 
         if joint.is_moving() {
-            if let (Some(increase_key), Some(decrease_key)) = (joint.increase_key, joint.decrease_key) {
+            if let (Some(increase_key), Some(decrease_key)) =
+                (joint.increase_key, joint.decrease_key)
+            {
                 commands.entity(child).insert(JointState {
                     name: joint.name.clone(),
                     origin_xyz: joint.origin_xyz,
@@ -267,7 +347,11 @@ fn setup(
         };
 
         for visual in &link.visuals {
-            let mesh_path = resolve_mesh_path(urdf_dir, settings.mesh_dir_override.as_deref(), &visual.mesh_file);
+            let mesh_path = resolve_mesh_path(
+                urdf_dir,
+                settings.mesh_dir_override.as_deref(),
+                &visual.mesh_file,
+            );
             let mesh = load_binary_stl_mesh(&mesh_path, visual.scale, settings.triangle_cap)
                 .unwrap_or_else(|error| panic!("failed to load {}: {error}", mesh_path.display()));
             let material = materials.add(StandardMaterial {
@@ -293,12 +377,12 @@ fn setup(
     let target = Vec3::new(0.03, 0.01, 0.18);
     commands.spawn((
         Camera3dBundle {
-            transform: camera_transform(-0.7, -0.55, 1.1, target),
+            transform: camera_transform(-0.7, -0.55, 1.8, target),
             ..default()
         },
         OrbitCamera {
             target,
-            radius: 1.1,
+            radius: 1.8,
             yaw: -0.7,
             pitch: -0.55,
         },
@@ -314,8 +398,14 @@ impl JointSpec {
 fn drive_joints(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    task_control: Option<Res<TaskSpaceControl>>,
     mut joints: Query<(&mut JointState, &mut Transform)>,
 ) {
+    if let Some(task_control) = task_control {
+        if task_control.enabled {
+            return;
+        }
+    }
     for (mut joint, mut transform) in &mut joints {
         let mut delta = 0.0;
         if keyboard.pressed(joint.increase_key) {
@@ -336,6 +426,118 @@ fn drive_joints(
     }
 }
 
+fn drive_task_space_target(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut task_control: ResMut<TaskSpaceControl>,
+    mut kinematics: ResMut<KinematicsState>,
+    mut marker: Query<&mut Transform, (With<TargetMarker>, Without<JointState>)>,
+    mut joints: Query<(&mut JointState, &mut Transform), Without<TargetMarker>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        task_control.enabled = !task_control.enabled;
+        println!(
+            "task-space IK: {}",
+            if task_control.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
+
+    if !task_control.enabled {
+        return;
+    }
+
+    let mut direction = Vec3::ZERO;
+    if keyboard.pressed(KeyCode::ArrowRight) {
+        direction.x += 1.0;
+    }
+    if keyboard.pressed(KeyCode::ArrowLeft) {
+        direction.x -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::ArrowUp) {
+        direction.y += 1.0;
+    }
+    if keyboard.pressed(KeyCode::ArrowDown) {
+        direction.y -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::PageUp) {
+        direction.z += 1.0;
+    }
+    if keyboard.pressed(KeyCode::PageDown) {
+        direction.z -= 1.0;
+    }
+
+    let mut rotation_delta = Vec3::ZERO;
+    if keyboard.pressed(KeyCode::KeyZ) {
+        rotation_delta.x += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyX) {
+        rotation_delta.x -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyC) {
+        rotation_delta.y += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyV) {
+        rotation_delta.y -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyB) {
+        rotation_delta.z += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyN) {
+        rotation_delta.z -= 1.0;
+    }
+
+    let moved = direction.length_squared() > 0.0;
+    let rotated = rotation_delta.length_squared() > 0.0;
+    if moved {
+        task_control.target += direction.normalize() * TARGET_MOVE_SPEED * time.delta_seconds();
+    }
+    if rotated {
+        task_control.target_orientation_enabled = true;
+        task_control.target_rpy +=
+            rotation_delta.normalize() * TARGET_ROTATE_SPEED * time.delta_seconds();
+    }
+    for mut transform in &mut marker {
+        transform.translation = task_control.target;
+        transform.rotation = rpy_quat(task_control.target_rpy);
+    }
+
+    if !(moved || rotated) {
+        return;
+    }
+
+    let current_values = joints
+        .iter_mut()
+        .map(|(joint, _)| (joint.name.clone(), joint.value))
+        .collect::<HashMap<_, _>>();
+
+    match solve_full_pose_ik_values(
+        &mut kinematics,
+        &current_values,
+        &task_control.target_link,
+        task_control.target,
+        task_control
+            .target_orientation_enabled
+            .then_some(task_control.target_rpy),
+    ) {
+        Ok(values) => {
+            for (mut joint, mut transform) in &mut joints {
+                if let Some(value) = values.get(&joint.name) {
+                    joint.value = value.clamp(joint.lower, joint.upper);
+                    transform.translation = joint.origin_xyz;
+                    transform.rotation =
+                        joint.origin_rotation * Quat::from_axis_angle(joint.axis, joint.value);
+                }
+            }
+        }
+        Err(error) => {
+            warn!("full-pose task-space IK failed: {error}");
+        }
+    }
+}
 fn orbit_camera(
     mut mouse_motion: EventReader<MouseMotion>,
     mut mouse_wheel: EventReader<MouseWheel>,
@@ -360,7 +562,7 @@ fn orbit_camera(
             camera.pitch = (camera.pitch - orbit_delta.y * 0.006).clamp(-1.35, 1.35);
         }
         if zoom_delta != 0.0 {
-            camera.radius = (camera.radius * (1.0 - zoom_delta * 0.08)).clamp(0.2, 5.0);
+            camera.radius = (camera.radius * (1.0 - zoom_delta * 0.08)).clamp(0.2, 8.0);
         }
         *transform = camera_transform(camera.yaw, camera.pitch, camera.radius, camera.target);
     }
@@ -371,13 +573,14 @@ fn draw_joint_axes(mut gizmos: Gizmos, joints: Query<(&JointState, &GlobalTransf
         let transform = global_transform.compute_transform();
         let origin = transform.translation;
         let axis = (transform.rotation * joint.axis).normalize_or_zero();
-        let color = if joint.axis.x.abs() > joint.axis.y.abs() && joint.axis.x.abs() > joint.axis.z.abs() {
-            Color::srgb(1.0, 0.15, 0.15)
-        } else if joint.axis.y.abs() > joint.axis.z.abs() {
-            Color::srgb(0.2, 1.0, 0.25)
-        } else {
-            Color::srgb(0.25, 0.45, 1.0)
-        };
+        let color =
+            if joint.axis.x.abs() > joint.axis.y.abs() && joint.axis.x.abs() > joint.axis.z.abs() {
+                Color::srgb(1.0, 0.15, 0.15)
+            } else if joint.axis.y.abs() > joint.axis.z.abs() {
+                Color::srgb(0.2, 1.0, 0.25)
+            } else {
+                Color::srgb(0.25, 0.45, 1.0)
+            };
 
         gizmos.line(origin - axis * 0.08, origin + axis * 0.08, color);
     }
@@ -398,7 +601,7 @@ fn spawn_ground(
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Cuboid::new(1.2, 1.2, 0.01)),
+        mesh: meshes.add(Cuboid::new(3.0, 3.0, 0.01)),
         material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.12, 0.13, 0.13),
             perceptual_roughness: 0.9,
@@ -409,6 +612,28 @@ fn spawn_ground(
     });
 }
 
+fn spawn_target_marker(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    target: Vec3,
+    target_rpy: Vec3,
+) {
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Cuboid::new(0.035, 0.035, 0.035)),
+            material: materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.2, 0.15),
+                emissive: Color::srgb(0.45, 0.04, 0.02).into(),
+                ..default()
+            }),
+            transform: Transform::from_translation(target).with_rotation(rpy_quat(target_rpy)),
+            ..default()
+        },
+        TargetMarker,
+        Name::new("task_space_target"),
+    ));
+}
 fn load_binary_stl_mesh(path: &Path, scale: Vec3, triangle_cap: usize) -> Result<Mesh, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     if bytes.len() < 84 {
@@ -484,12 +709,17 @@ fn rpy_quat(rpy: Vec3) -> Quat {
     Quat::from_rotation_z(rpy.z) * Quat::from_rotation_y(rpy.y) * Quat::from_rotation_x(rpy.x)
 }
 
+fn rpy_quat_f64(rpy: Vec3) -> UnitQuaternion<f64> {
+    UnitQuaternion::from_euler_angles(rpy.x as f64, rpy.y as f64, rpy.z as f64)
+}
+
 fn parse_viewer_settings(repo_root: &Path) -> ViewerSettings {
     let mut triangle_cap = None;
     let mut mesh_dir_override = None;
     let mut urdf_path = None;
     let mut joints_arg = None;
     let mut target_xyz_arg = None;
+    let mut target_rpy_arg = None;
     let mut dry_run = false;
 
     let mut args = env::args().skip(1);
@@ -500,6 +730,10 @@ fn parse_viewer_settings(repo_root: &Path) -> ViewerSettings {
         }
         if let Some(value) = arg.strip_prefix("--target-xyz=") {
             target_xyz_arg = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--target-rpy=") {
+            target_rpy_arg = Some(value.to_string());
             continue;
         }
 
@@ -534,6 +768,11 @@ fn parse_viewer_settings(repo_root: &Path) -> ViewerSettings {
                     target_xyz_arg = Some(value);
                 }
             }
+            "--target-rpy" => {
+                if let Some(value) = args.next() {
+                    target_rpy_arg = Some(value);
+                }
+            }
             _ => {}
         }
     }
@@ -552,10 +791,18 @@ fn parse_viewer_settings(repo_root: &Path) -> ViewerSettings {
         .map(parse_csv_vec3)
         .transpose()
         .expect("--target-xyz must be three comma-separated numbers");
+    let target_rpy = target_rpy_arg
+        .as_deref()
+        .map(parse_csv_vec3)
+        .transpose()
+        .expect("--target-rpy must be three comma-separated numbers");
+    let target_orientation_enabled = target_rpy.is_some();
+    let target_rpy = target_rpy.unwrap_or(Vec3::ZERO);
     let initial_joint_values = compute_initial_joint_values(
         &urdf_path,
         joints_arg.as_deref(),
         target_xyz,
+        target_orientation_enabled.then_some(target_rpy),
     )
     .expect("failed to calculate initial joint values with k");
 
@@ -565,6 +812,8 @@ fn parse_viewer_settings(repo_root: &Path) -> ViewerSettings {
         triangle_cap: triangle_cap.unwrap_or(DEFAULT_TRIANGLE_CAP),
         initial_joint_values,
         target_xyz,
+        target_rpy,
+        target_orientation_enabled,
         dry_run,
     }
 }
@@ -603,6 +852,7 @@ fn compute_initial_joint_values(
     urdf_path: &Path,
     joints_arg: Option<&str>,
     target_xyz: Option<Vec3>,
+    target_rpy: Option<Vec3>,
 ) -> Result<HashMap<String, f32>, String> {
     if joints_arg.is_none() && target_xyz.is_none() {
         return Ok(HashMap::new());
@@ -637,16 +887,70 @@ fn compute_initial_joint_values(
     chain.update_transforms();
 
     if let Some(target_xyz) = target_xyz {
-        solve_position_ik(&chain, "link5", target_xyz)?;
+        solve_full_pose_ik(&chain, TASK_TARGET_LINK, target_xyz, target_rpy)?;
     }
 
     Ok(joint_names
         .into_iter()
-        .zip(chain.joint_positions().into_iter().map(|value| value as f32))
+        .zip(
+            chain
+                .joint_positions()
+                .into_iter()
+                .map(|value| value as f32),
+        )
         .collect())
 }
 
-fn solve_position_ik(chain: &k::Chain<f64>, target_link: &str, target_xyz: Vec3) -> Result<(), String> {
+fn create_kinematics_state(urdf_path: &Path) -> Result<KinematicsState, String> {
+    let chain = k::Chain::<f64>::from_urdf_file(urdf_path)
+        .map_err(|error| format!("failed to load URDF with k: {error}"))?;
+    let joint_names = chain
+        .iter_joints()
+        .map(|joint| joint.name.clone())
+        .collect::<Vec<_>>();
+    Ok(KinematicsState { chain, joint_names })
+}
+
+fn solve_full_pose_ik_values(
+    kinematics: &mut KinematicsState,
+    current_values: &HashMap<String, f32>,
+    target_link: &str,
+    target_xyz: Vec3,
+    target_rpy: Option<Vec3>,
+) -> Result<HashMap<String, f32>, String> {
+    let positions = kinematics
+        .joint_names
+        .iter()
+        .map(|name| current_values.get(name).copied().unwrap_or(0.0) as f64)
+        .collect::<Vec<_>>();
+
+    kinematics
+        .chain
+        .set_joint_positions(&positions)
+        .map_err(|error| format!("failed to set joint positions: {error}"))?;
+    kinematics.chain.update_transforms();
+    solve_full_pose_ik(&kinematics.chain, target_link, target_xyz, target_rpy)?;
+
+    Ok(kinematics
+        .joint_names
+        .iter()
+        .cloned()
+        .zip(
+            kinematics
+                .chain
+                .joint_positions()
+                .into_iter()
+                .map(|value| value as f32),
+        )
+        .collect())
+}
+
+fn solve_full_pose_ik(
+    chain: &k::Chain<f64>,
+    target_link: &str,
+    target_xyz: Vec3,
+    target_rpy: Option<Vec3>,
+) -> Result<(), String> {
     let target_node = chain
         .find_link(target_link)
         .ok_or_else(|| format!("target link '{target_link}' was not found in the URDF"))?;
@@ -656,17 +960,16 @@ fn solve_position_ik(chain: &k::Chain<f64>, target_link: &str, target_xyz: Vec3)
     target_transform.translation.vector.x = target_xyz.x as f64;
     target_transform.translation.vector.y = target_xyz.y as f64;
     target_transform.translation.vector.z = target_xyz.z as f64;
+    if let Some(target_rpy) = target_rpy {
+        target_transform.rotation = rpy_quat_f64(target_rpy);
+    }
 
     let arm = k::SerialChain::from_end(target_node);
     let solver = k::JacobianIkSolver::default();
-    let mut constraints = k::Constraints::default();
-    constraints.rotation_x = false;
-    constraints.rotation_y = false;
-    constraints.rotation_z = false;
 
     solver
-        .solve_with_constraints(&arm, &target_transform, &constraints)
-        .map_err(|error| format!("position-only IK solver failed: {error}"))?;
+        .solve(&arm, &target_transform)
+        .map_err(|error| format!("full-pose IK solver failed: {error}"))?;
     chain.update_transforms();
     Ok(())
 }
@@ -678,7 +981,11 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn resolve_mesh_path(urdf_dir: &Path, mesh_dir_override: Option<&Path>, mesh_file: &str) -> PathBuf {
+fn resolve_mesh_path(
+    urdf_dir: &Path,
+    mesh_dir_override: Option<&Path>,
+    mesh_file: &str,
+) -> PathBuf {
     let mesh_path = Path::new(mesh_file);
     if mesh_path.is_absolute() {
         return mesh_path.to_path_buf();
@@ -738,7 +1045,8 @@ fn parse_urdf(path: &Path) -> Result<RobotModel, String> {
         let Some(name) = attr_value(&block.start_tag, "name") else {
             continue;
         };
-        let joint_type = attr_value(&block.start_tag, "type").unwrap_or_else(|| "fixed".to_string());
+        let joint_type =
+            attr_value(&block.start_tag, "type").unwrap_or_else(|| "fixed".to_string());
         let parent = first_tag(&block.body, "parent")
             .and_then(|tag| attr_value(&tag, "link"))
             .unwrap_or_default();
@@ -877,6 +1185,3 @@ fn parse_color(value: &str) -> Color {
     let a = parts.next().unwrap_or(1.0);
     Color::srgba(r, g, b, a)
 }
-
-
-
