@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File tools\run_urdf_viewer.ps1 -BoxVisuals
 
 ## Run Bevy Viewer
 
-Manual joint-space viewer:
+Manual joint-space viewer. If `Joints` is omitted, the viewer starts from a straight-arm home pose instead of the URDF all-zero pose:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\run_bevy_viewer.ps1
@@ -59,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File tools\run_bevy_viewer.ps1
 Start Bevy at specific joint angles:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\run_bevy_viewer.ps1 -Joints "0.2,0.3,-0.4,0.1,0.2"
+powershell -ExecutionPolicy Bypass -File tools\run_bevy_viewer.ps1 -Joints "-0.6,2.5,1.5,-1.2,-1.4,2"
 ```
 
 Start Bevy from a task-space target. This uses `k` internally to solve IK before opening the window. `TargetXyz` is meters; `TargetRpy` is roll/pitch/yaw in radians.

@@ -155,9 +155,19 @@ fn solve_ik(
     let arm = k::SerialChain::from_end(target_node);
     let solver = k::JacobianIkSolver::default();
 
-    solver
-        .solve(&arm, &target_transform)
-        .context("full-pose IK solver failed")?;
+    if target_rpy.is_some() {
+        solver
+            .solve(&arm, &target_transform)
+            .context("full-pose IK solver failed")?;
+    } else {
+        let mut constraints = k::Constraints::default();
+        constraints.rotation_x = false;
+        constraints.rotation_y = false;
+        constraints.rotation_z = false;
+        solver
+            .solve_with_constraints(&arm, &target_transform, &constraints)
+            .context("position-only IK solver failed")?;
+    }
     chain.update_transforms();
 
     if let Some(target_rpy) = target_rpy {
@@ -167,7 +177,7 @@ fn solve_ik(
         );
     } else {
         println!(
-            "\nIK requested target for {target_link}: xyz=[{:.6}, {:.6}, {:.6}] orientation=current",
+            "\nIK requested target for {target_link}: xyz=[{:.6}, {:.6}, {:.6}] orientation=unconstrained",
             target_xyz[0], target_xyz[1], target_xyz[2]
         );
     }

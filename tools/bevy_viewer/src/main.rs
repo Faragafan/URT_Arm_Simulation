@@ -15,6 +15,7 @@ const JOINT_SPEED: f32 = 1.2;
 const TARGET_MOVE_SPEED: f32 = 0.25;
 const TARGET_ROTATE_SPEED: f32 = 1.2;
 const TASK_TARGET_LINK: &str = "link6";
+const DEFAULT_HOME_JOINTS: [f64; 6] = [-0.6, 2.5, 1.5, -1.2, -1.4, 2.0];
 const DEFAULT_LIMIT: f32 = std::f32::consts::PI;
 const KEY_PAIRS: [(KeyCode, KeyCode); 8] = [
     (KeyCode::KeyQ, KeyCode::KeyA),
@@ -141,7 +142,7 @@ fn main() {
             );
         } else {
             println!(
-                "k IK target for link6: xyz=[{:.3}, {:.3}, {:.3}], orientation=current",
+                "k IK target for link6: xyz=[{:.3}, {:.3}, {:.3}], orientation=unconstrained",
                 target_xyz.x, target_xyz.y, target_xyz.z
             );
         }
@@ -240,7 +241,16 @@ fn setup(
 
     spawn_ground(&mut commands, &mut meshes, &mut materials);
 
-    let task_target = settings.target_xyz.unwrap_or(Vec3::new(-0.20, 0.30, 0.28));
+    let mut kinematics = create_kinematics_state(&settings.urdf_path)
+        .expect("failed to initialize k kinematics state");
+    let task_target = settings.target_xyz.unwrap_or_else(|| {
+        link_position_from_joint_values(
+            &mut kinematics,
+            &settings.initial_joint_values,
+            TASK_TARGET_LINK,
+        )
+        .unwrap_or(Vec3::new(-0.20, 0.30, 0.28))
+    });
     commands.insert_resource(TaskSpaceControl {
         enabled: settings.target_xyz.is_some(),
         target: task_target,
@@ -248,10 +258,7 @@ fn setup(
         target_orientation_enabled: settings.target_orientation_enabled,
         target_link: TASK_TARGET_LINK.to_string(),
     });
-    commands.insert_resource(
-        create_kinematics_state(&settings.urdf_path)
-            .expect("failed to initialize k kinematics state"),
-    );
+    commands.insert_resource(kinematics);
     spawn_target_marker(
         &mut commands,
         &mut meshes,
@@ -514,7 +521,7 @@ fn drive_task_space_target(
         .map(|(joint, _)| (joint.name.clone(), joint.value))
         .collect::<HashMap<_, _>>();
 
-    match solve_full_pose_ik_values(
+    match solve_task_space_ik_values(
         &mut kinematics,
         &current_values,
         &task_control.target_link,
@@ -533,8 +540,10 @@ fn drive_task_space_target(
                 }
             }
         }
-        Err(error) => {
-            warn!("full-pose task-space IK failed: {error}");
+        Err(_error) => {
+            warn!(
+                "task-space IK did not converge; target may be unreachable or near a singularity"
+            );
         }
     }
 }
@@ -854,10 +863,6 @@ fn compute_initial_joint_values(
     target_xyz: Option<Vec3>,
     target_rpy: Option<Vec3>,
 ) -> Result<HashMap<String, f32>, String> {
-    if joints_arg.is_none() && target_xyz.is_none() {
-        return Ok(HashMap::new());
-    }
-
     let chain = k::Chain::<f64>::from_urdf_file(urdf_path)
         .map_err(|error| format!("failed to load URDF with k: {error}"))?;
     let joint_names = chain
@@ -869,6 +874,8 @@ fn compute_initial_joint_values(
             .into_iter()
             .map(|value| value as f64)
             .collect::<Vec<_>>()
+    } else if chain.dof() == DEFAULT_HOME_JOINTS.len() {
+        DEFAULT_HOME_JOINTS.to_vec()
     } else {
         vec![0.0; chain.dof()]
     };
@@ -887,7 +894,7 @@ fn compute_initial_joint_values(
     chain.update_transforms();
 
     if let Some(target_xyz) = target_xyz {
-        solve_full_pose_ik(&chain, TASK_TARGET_LINK, target_xyz, target_rpy)?;
+        solve_task_space_ik(&chain, TASK_TARGET_LINK, target_xyz, target_rpy)?;
     }
 
     Ok(joint_names
@@ -911,7 +918,38 @@ fn create_kinematics_state(urdf_path: &Path) -> Result<KinematicsState, String> 
     Ok(KinematicsState { chain, joint_names })
 }
 
-fn solve_full_pose_ik_values(
+fn link_position_from_joint_values(
+    kinematics: &mut KinematicsState,
+    joint_values: &HashMap<String, f32>,
+    target_link: &str,
+) -> Result<Vec3, String> {
+    let positions = kinematics
+        .joint_names
+        .iter()
+        .map(|name| joint_values.get(name).copied().unwrap_or(0.0) as f64)
+        .collect::<Vec<_>>();
+    kinematics
+        .chain
+        .set_joint_positions(&positions)
+        .map_err(|error| format!("failed to set joint positions: {error}"))?;
+    kinematics.chain.update_transforms();
+
+    let target_node = kinematics
+        .chain
+        .find_link(target_link)
+        .ok_or_else(|| format!("target link '{target_link}' was not found in the URDF"))?;
+    let target_transform = target_node
+        .world_transform()
+        .ok_or_else(|| format!("target link '{target_link}' has no world transform"))?;
+    let translation = target_transform.translation.vector;
+    Ok(Vec3::new(
+        translation.x as f32,
+        translation.y as f32,
+        translation.z as f32,
+    ))
+}
+
+fn solve_task_space_ik_values(
     kinematics: &mut KinematicsState,
     current_values: &HashMap<String, f32>,
     target_link: &str,
@@ -929,7 +967,7 @@ fn solve_full_pose_ik_values(
         .set_joint_positions(&positions)
         .map_err(|error| format!("failed to set joint positions: {error}"))?;
     kinematics.chain.update_transforms();
-    solve_full_pose_ik(&kinematics.chain, target_link, target_xyz, target_rpy)?;
+    solve_task_space_ik(&kinematics.chain, target_link, target_xyz, target_rpy)?;
 
     Ok(kinematics
         .joint_names
@@ -945,7 +983,7 @@ fn solve_full_pose_ik_values(
         .collect())
 }
 
-fn solve_full_pose_ik(
+fn solve_task_space_ik(
     chain: &k::Chain<f64>,
     target_link: &str,
     target_xyz: Vec3,
@@ -1067,17 +1105,22 @@ fn parse_urdf(path: &Path) -> Result<RobotModel, String> {
             (None, None)
         };
 
-        let mut lower = attr_value(&limit_tag, "lower")
-            .and_then(|value| value.parse::<f32>().ok())
-            .unwrap_or(-DEFAULT_LIMIT);
-        let mut upper = attr_value(&limit_tag, "upper")
-            .and_then(|value| value.parse::<f32>().ok())
-            .unwrap_or(DEFAULT_LIMIT);
+        let (mut lower, mut upper) = if joint_type == "continuous" {
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            (
+                attr_value(&limit_tag, "lower")
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .unwrap_or(-DEFAULT_LIMIT),
+                attr_value(&limit_tag, "upper")
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .unwrap_or(DEFAULT_LIMIT),
+            )
+        };
         if lower >= upper {
             lower = -DEFAULT_LIMIT;
             upper = DEFAULT_LIMIT;
         }
-
         joints.push(JointSpec {
             name,
             joint_type,
